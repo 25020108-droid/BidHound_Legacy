@@ -9,7 +9,7 @@ import dao.TransactionDaoImpl;
 import dao.UserDao;
 import dao.UserDaoImpl;
 import dto.entities.Bid;
-import dto.entities.User;
+import dto.entities.Item;
 import dto.mapper.BidMapper;
 import dto.mapper.PlaceBidRequest;
 import dto.mapper.PlaceBidResponse;
@@ -20,6 +20,7 @@ import network.AuctionRoom;
 import network.ClientHandler;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 public class AuctionService {
   private final ItemDao itemDao = new ItemDaoImpl();
@@ -31,15 +32,21 @@ public class AuctionService {
     transactionDao.finalizeAuction(itemId, winnerId, finalPrice);
   }
 
-  public boolean processBid(AuctionRoom auctionRoom, ClientHandler sender, PlaceBidRequest placeBidRequest) {
+  public void processBid(AuctionRoom auctionRoom, ClientHandler sender, PlaceBidRequest placeBidRequest) {
     if (auctionRoom.isClosed()) {
       sender.sendMessage(new MessageEnvelop(MessageType.ERROR, "The auction is closed!"));
-      return false;
+      return;
     }
     Bid bid = BidMapper.toEntity(placeBidRequest);
     if (bid.getAmount().compareTo(auctionRoom.getCurrentPrice()) <= 0) {
       sender.sendMessage(new MessageEnvelop(MessageType.ERROR, "Bid phải lớn hơn giá đặt hiện tại!"));
-      return false;
+      return;
+    }
+
+    dto.entities.User bidder = userDao.findUserById(placeBidRequest.bidderId());
+    if (bidder == null || bidder.getBalance() == null || bidder.getBalance().compareTo(bid.getAmount()) < 0) {
+      sender.sendMessage(new MessageEnvelop(MessageType.ERROR, "Số dư không đủ để đặt giá này!"));
+      return;
     }
 
     auctionRoom.setCurrentPrice(bid.getAmount());
@@ -51,6 +58,11 @@ public class AuctionService {
     MessageEnvelop broadcastMsg = new MessageEnvelop(MessageType.BID_BROADCAST, JsonConverter.toJson(response));
     auctionRoom.broadcast(broadcastMsg);
 
+    itemDao.updateCurrentPriceAndWinner(bid.getItemId(),bid.getAmount(),bid.getBidderId());
+
+    Item currentItem = itemDao.findById(bid.getItemId());
+    currentItem.addBid(bid);
+
     if (auctionRoom.getRemainingSeconds() <= 10) {
       auctionRoom.extendTime(15);
       MessageEnvelop extendMsg = new MessageEnvelop(
@@ -58,8 +70,8 @@ public class AuctionService {
               "Hệ thống tự động gia hạn thêm 15 giây do có người đặt giá ở giây cuối!"
       );
       auctionRoom.broadcast(extendMsg);
+      itemDao.updateEndTime(currentItem.getId(), LocalDateTime.now().plusSeconds(15));
     }
-    return true;
   }
 }
 
